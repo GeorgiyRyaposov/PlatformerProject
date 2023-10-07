@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using Common.ServiceLocator;
+using Game.Characters.Player;
 using Game.Common;
 using Game.Components;
 using Game.Data;
@@ -17,6 +18,7 @@ namespace Game.Loaders.Bootstrap
         [SerializeField] private ScriptablesHolder componentsServicesHolder;
         [SerializeField] private ScriptablesHolder servicesHolder;
         [SerializeField] private MonoServiceLocator serviceLocator;
+        [SerializeField] private MovementSettings movementSettings;
 
         [Inject] private SignalBus signalBus;
         [Inject] private TickableManager tickableManager;
@@ -26,6 +28,7 @@ namespace Game.Loaders.Bootstrap
             Global.ServiceLocator = serviceLocator;
 
             InputMediator.InputEventsHolder = new InputEventsHolder();
+            ServicesMediator.MovementSettings = movementSettings;
             
             RegisterServices();
             InitializeServices();

@@ -49,6 +49,7 @@ MonoBehaviour:
     type: 2}
   servicesHolder: {fileID: 11400000, guid: a4a4f712f4df7f044b027906b29fb4c8, type: 2}
   serviceLocator: {fileID: -8669630934355511197}
+  movementSettings: {fileID: 11400000, guid: 7d38c8cdbf38a844494e0e20ca8deadf, type: 2}
 --- !u!114 &-8669630934355511197
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -1,4 +1,6 @@
-﻿ using Game.Input;
+﻿ using Game;
+ using Game.Characters.Player;
+ using Game.Input;
  using UnityEngine;
  using Zenject;
 #if ENABLE_INPUT_SYSTEM 
@@ -16,41 +18,14 @@ namespace StarterAssets
 #endif
     public class ThirdPersonController : MonoBehaviour
     {
-        [Header("Player")]
-        [Tooltip("Move speed of the character in m/s")]
-        public float MoveSpeed = 2.0f;
-
-        [Tooltip("Sprint speed of the character in m/s")]
-        public float SprintSpeed = 5.335f;
-
-        [Tooltip("How fast the character turns to face movement direction")]
-        [Range(0.0f, 0.3f)]
-        public float RotationSmoothTime = 0.12f;
-
-        [Tooltip("Acceleration and deceleration")]
-        public float SpeedChangeRate = 10.0f;
-
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
         [Range(0, 1)] public float FootstepAudioVolume = 0.5f;
 
-        [Space(10)]
-        [Tooltip("The height the player can jump")]
-        public float JumpHeight = 1.2f;
-
-        [Tooltip("The character uses its own gravity value. The engine default is -9.81f")]
-        public float Gravity = -15.0f;
-
-        [Space(10)]
-        [Tooltip("Time required to pass before being able to jump again. Set to 0f to instantly jump again")]
-        public float JumpTimeout = 0.50f;
-
-        [Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
-        public float FallTimeout = 0.15f;
-
         [Header("Player Grounded")]
         [Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
         public bool Grounded = true;
+        public bool WallNear = true;
 
         [Tooltip("Useful for rough ground")]
         public float GroundedOffset = -0.14f;
@@ -78,34 +53,34 @@ namespace StarterAssets
         public bool LockCameraPosition = false;
 
         // cinemachine
-        private float _cinemachineTargetYaw;
-        private float _cinemachineTargetPitch;
+        private float cinemachineTargetYaw;
+        private float cinemachineTargetPitch;
 
         // player
-        private float _speed;
-        private float _animationBlend;
-        private float _targetRotation = 0.0f;
-        private float _rotationVelocity;
-        private float _verticalVelocity;
-        private float _terminalVelocity = 53.0f;
+        private float speed;
+        private float animationBlend;
+        private float targetRotation = 0.0f;
+        private float rotationVelocity;
+        private float verticalVelocity;
+        private float terminalVelocity = 53.0f;
 
         // timeout deltatime
-        private float _jumpTimeoutDelta;
-        private float _fallTimeoutDelta;
+        private float jumpTimeoutDelta;
+        private float fallTimeoutDelta;
 
         // animation IDs
-        private int _animIDSpeed;
-        private int _animIDGrounded;
-        private int _animIDJump;
-        private int _animIDFreeFall;
-        private int _animIDMotionSpeed;
+        private int animIDSpeed;
+        private int animIDGrounded;
+        private int animIDJump;
+        private int animIDFreeFall;
+        private int animIDMotionSpeed;
 
 #if ENABLE_INPUT_SYSTEM 
-        private PlayerInput _playerInput;
+        private PlayerInput playerInput;
 #endif
-        private Animator _animator;
-        private CharacterController _controller;
-        private InputEventsHolder _input;
+        private Animator animator;
+        private CharacterController controller;
+        private InputEventsHolder input;
         
         private GameObject _mainCamera;
         private GameObject mainCamera
@@ -120,9 +95,9 @@ namespace StarterAssets
             }
         }
 
-        private const float _threshold = 0.01f;
+        private const float threshold = 0.01f;
 
-        private bool _hasAnimator;
+        private bool hasAnimator;
 
         private bool IsCurrentDeviceMouse
         {
@@ -136,15 +111,19 @@ namespace StarterAssets
             }
         }
 
+        private MovementSettings settings;
+        private Collider closestWall;
+
         private void Start()
         {
-            _input = InputMediator.InputEventsHolder;
-            _cinemachineTargetYaw = CinemachineCameraTarget.transform.rotation.eulerAngles.y;
+            settings = ServicesMediator.MovementSettings;
+            input = InputMediator.InputEventsHolder;
+            cinemachineTargetYaw = CinemachineCameraTarget.transform.rotation.eulerAngles.y;
             
-            _hasAnimator = TryGetComponent(out _animator);
-            _controller = GetComponent<CharacterController>();
+            hasAnimator = TryGetComponent(out animator);
+            controller = GetComponent<CharacterController>();
 #if ENABLE_INPUT_SYSTEM 
-            _playerInput = GetComponent<PlayerInput>();
+            playerInput = GetComponent<PlayerInput>();
 #else
 			Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
@@ -152,14 +131,12 @@ namespace StarterAssets
             AssignAnimationIDs();
 
             // reset our timeouts on start
-            _jumpTimeoutDelta = JumpTimeout;
-            _fallTimeoutDelta = FallTimeout;
+            jumpTimeoutDelta = settings.JumpTimeout;
+            fallTimeoutDelta = settings.FallTimeout;
         }
 
         private void Update()
         {
-            _hasAnimator = TryGetComponent(out _animator);
-
             JumpAndGravity();
             GroundedCheck();
             Move();
@@ -172,65 +149,110 @@ namespace StarterAssets
 
         private void AssignAnimationIDs()
         {
-            _animIDSpeed = Animator.StringToHash("Speed");
-            _animIDGrounded = Animator.StringToHash("Grounded");
-            _animIDJump = Animator.StringToHash("Jump");
-            _animIDFreeFall = Animator.StringToHash("FreeFall");
-            _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
+            animIDSpeed = Animator.StringToHash("Speed");
+            animIDGrounded = Animator.StringToHash("Grounded");
+            animIDJump = Animator.StringToHash("Jump");
+            animIDFreeFall = Animator.StringToHash("FreeFall");
+            animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
         }
 
+        private Collider[] wallCheckResults = new Collider[10];
         private void GroundedCheck()
         {
             // set sphere position, with offset
             Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset,
                 transform.position.z);
-            Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
-                QueryTriggerInteraction.Ignore);
+            // Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
+            //     QueryTriggerInteraction.Ignore);
+            
+            var hits = Physics.OverlapSphereNonAlloc(spherePosition, GroundedRadius, wallCheckResults, GroundLayers, QueryTriggerInteraction.Ignore);
+            Grounded = hits > 0;
+
+            CheckWall(hits, spherePosition);
 
             // update animator if using character
-            if (_hasAnimator)
+            if (hasAnimator)
             {
-                _animator.SetBool(_animIDGrounded, Grounded);
+                animator.SetBool(animIDGrounded, Grounded);
+            }
+        }
+
+        private void CheckWall(int hits, Vector3 groundPosition)
+        {
+            if (hits == 0)
+            {
+                closestWall = null;
+                WallNear = false;
+                return;
+            }
+
+            var closestDistance = float.MaxValue;
+            for (int i = 0; i < hits; i++)
+            {
+                var result = wallCheckResults[i];
+                
+                var closestPoint = result.ClosestPoint(groundPosition);
+                
+                var directionToSurface = closestPoint - groundPosition;
+                Debug.DrawLine(closestPoint, directionToSurface, Color.green, 5);
+
+                var dot = Vector3.Dot(directionToSurface.normalized, Vector3.up);
+                if (!(Mathf.Abs(dot) < settings.WallDetection))
+                {
+                    continue;
+                }
+                
+                WallNear = true;
+                var distance = (groundPosition - closestPoint).sqrMagnitude;
+                if (closestWall == null)
+                {
+                    closestWall = result;
+                }
+                else if (distance < closestDistance)
+                {
+                    closestDistance = distance;
+                    closestWall = result;
+                }
             }
         }
 
         private void CameraRotation()
         {
             // if there is an input and camera position is not fixed
-            if (_input.Look.sqrMagnitude >= _threshold && !LockCameraPosition)
+            if (input.Look.sqrMagnitude >= threshold && !LockCameraPosition)
             {
                 //Don't multiply mouse input by Time.deltaTime;
                 float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
 
-                _cinemachineTargetYaw += _input.Look.x * deltaTimeMultiplier;
-                _cinemachineTargetPitch += _input.Look.y * deltaTimeMultiplier;
+                cinemachineTargetYaw += input.Look.x * deltaTimeMultiplier;
+                cinemachineTargetPitch += input.Look.y * deltaTimeMultiplier;
             }
 
             // clamp our rotations so our values are limited 360 degrees
-            _cinemachineTargetYaw = ClampAngle(_cinemachineTargetYaw, float.MinValue, float.MaxValue);
-            _cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
+            cinemachineTargetYaw = ClampAngle(cinemachineTargetYaw, float.MinValue, float.MaxValue);
+            cinemachineTargetPitch = ClampAngle(cinemachineTargetPitch, BottomClamp, TopClamp);
 
             // Cinemachine will follow this target
-            CinemachineCameraTarget.transform.rotation = Quaternion.Euler(_cinemachineTargetPitch + CameraAngleOverride,
-                _cinemachineTargetYaw, 0.0f);
+            CinemachineCameraTarget.transform.rotation = Quaternion.Euler(cinemachineTargetPitch + CameraAngleOverride,
+                cinemachineTargetYaw, 0.0f);
         }
 
         private void Move()
         {
             // set target speed based on move speed, sprint speed and if sprint is pressed
-            float targetSpeed = _input.Sprint ? SprintSpeed : MoveSpeed;
+            float targetSpeed = input.Sprint ? settings.SprintSpeed : settings.MoveSpeed;
 
             // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
             // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is no input, set the target speed to 0
-            if (_input.Move == Vector2.zero) targetSpeed = 0.0f;
+            if (input.Move == Vector2.zero) targetSpeed = 0.0f;
 
             // a reference to the players current horizontal velocity
-            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+            float currentHorizontalSpeed = new Vector3(controller.velocity.x, 0.0f, controller.velocity.z).magnitude;
 
             float speedOffset = 0.1f;
-            float inputMagnitude = _input.Move.magnitude;
+            float inputMagnitude = input.Move.magnitude;
 
             // accelerate or decelerate to target speed
             if (currentHorizontalSpeed < targetSpeed - speedOffset ||
@@ -238,48 +260,48 @@ namespace StarterAssets
             {
                 // creates curved result rather than a linear one giving a more organic speed change
                 // note T in Lerp is clamped, so we don't need to clamp our speed
-                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
-                    Time.deltaTime * SpeedChangeRate);
+                speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
+                    Time.deltaTime * settings.SpeedChangeRate);
 
                 // round speed to 3 decimal places
-                _speed = Mathf.Round(_speed * 1000f) / 1000f;
+                speed = Mathf.Round(speed * 1000f) / 1000f;
             }
             else
             {
-                _speed = targetSpeed;
+                speed = targetSpeed;
             }
 
-            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * SpeedChangeRate);
-            if (_animationBlend < 0.01f) _animationBlend = 0f;
+            animationBlend = Mathf.Lerp(animationBlend, targetSpeed, Time.deltaTime * settings.SpeedChangeRate);
+            if (animationBlend < 0.01f) animationBlend = 0f;
 
             // normalise input direction
-            Vector3 inputDirection = new Vector3(_input.Move.x, 0.0f, _input.Move.y).normalized;
+            Vector3 inputDirection = new Vector3(input.Move.x, 0.0f, input.Move.y).normalized;
 
             // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is a move input rotate player when the player is moving
-            if (_input.Move != Vector2.zero)
+            if (input.Move != Vector2.zero)
             {
-                _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
+                targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
                                   mainCamera.transform.eulerAngles.y;
-                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _targetRotation, ref _rotationVelocity,
-                    RotationSmoothTime);
+                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref rotationVelocity,
+                    settings.RotationSmoothTime);
 
                 // rotate to face input direction relative to camera position
                 transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
             }
 
 
-            Vector3 targetDirection = Quaternion.Euler(0.0f, _targetRotation, 0.0f) * Vector3.forward;
+            Vector3 targetDirection = Quaternion.Euler(0.0f, targetRotation, 0.0f) * Vector3.forward;
 
             // move the player
-            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) +
-                             new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+            controller.Move(targetDirection.normalized * (speed * Time.deltaTime) +
+                             new Vector3(0.0f, verticalVelocity, 0.0f) * Time.deltaTime);
 
             // update animator if using character
-            if (_hasAnimator)
+            if (hasAnimator)
             {
-                _animator.SetFloat(_animIDSpeed, _animationBlend);
-                _animator.SetFloat(_animIDMotionSpeed, inputMagnitude);
+                animator.SetFloat(animIDSpeed, animationBlend);
+                animator.SetFloat(animIDMotionSpeed, inputMagnitude);
             }
         }
 
@@ -288,67 +310,81 @@ namespace StarterAssets
             if (Grounded)
             {
                 // reset the fall timeout timer
-                _fallTimeoutDelta = FallTimeout;
+                fallTimeoutDelta = settings.FallTimeout;
 
                 // update animator if using character
-                if (_hasAnimator)
+                if (hasAnimator)
                 {
-                    _animator.SetBool(_animIDJump, false);
-                    _animator.SetBool(_animIDFreeFall, false);
+                    animator.SetBool(animIDJump, false);
+                    animator.SetBool(animIDFreeFall, false);
                 }
 
                 // stop our velocity dropping infinitely when grounded
-                if (_verticalVelocity < 0.0f)
+                if (verticalVelocity < 0.0f)
                 {
-                    _verticalVelocity = -2f;
+                    verticalVelocity = -2f;
                 }
 
                 // Jump
-                if (_input.Jump && _jumpTimeoutDelta <= 0.0f)
+                if (input.Jump && jumpTimeoutDelta <= 0.0f)
                 {
                     // the square root of H * -2 * G = how much velocity needed to reach desired height
-                    _verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
+                    verticalVelocity = Mathf.Sqrt(settings.JumpHeight * -2f * settings.Gravity);
 
                     // update animator if using character
-                    if (_hasAnimator)
+                    if (hasAnimator)
                     {
-                        _animator.SetBool(_animIDJump, true);
+                        animator.SetBool(animIDJump, true);
                     }
                 }
 
                 // jump timeout
-                if (_jumpTimeoutDelta >= 0.0f)
+                if (jumpTimeoutDelta >= 0.0f)
                 {
-                    _jumpTimeoutDelta -= Time.deltaTime;
+                    jumpTimeoutDelta -= Time.deltaTime;
+                }
+            }
+            else if (WallNear && input.Jump && jumpTimeoutDelta <= 0.0f)
+            {
+                // the square root of H * -2 * G = how much velocity needed to reach desired height
+                verticalVelocity = Mathf.Sqrt(settings.JumpHeight * -2f * settings.Gravity);
+
+                // update animator if using character
+                if (hasAnimator)
+                {
+                    animator.SetBool(animIDJump, true);
                 }
             }
             else
             {
                 // reset the jump timeout timer
-                _jumpTimeoutDelta = JumpTimeout;
+                jumpTimeoutDelta = settings.JumpTimeout;
 
                 // fall timeout
-                if (_fallTimeoutDelta >= 0.0f)
+                if (fallTimeoutDelta >= 0.0f)
                 {
-                    _fallTimeoutDelta -= Time.deltaTime;
+                    fallTimeoutDelta -= Time.deltaTime;
                 }
                 else
                 {
                     // update animator if using character
-                    if (_hasAnimator)
+                    if (hasAnimator)
                     {
-                        _animator.SetBool(_animIDFreeFall, true);
+                        animator.SetBool(animIDFreeFall, true);
                     }
                 }
 
                 // if we are not grounded, do not jump
-                _input.Jump = false;
+                if (!WallNear)
+                {
+                    input.Jump = false;
+                }
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (_verticalVelocity < _terminalVelocity)
+            if (verticalVelocity < terminalVelocity)
             {
-                _verticalVelocity += Gravity * Time.deltaTime;
+                verticalVelocity += settings.Gravity * Time.deltaTime;
             }
         }
 
@@ -380,7 +416,7 @@ namespace StarterAssets
                 if (FootstepAudioClips.Length > 0)
                 {
                     var index = Random.Range(0, FootstepAudioClips.Length);
-                    AudioSource.PlayClipAtPoint(FootstepAudioClips[index], transform.TransformPoint(_controller.center), FootstepAudioVolume);
+                    AudioSource.PlayClipAtPoint(FootstepAudioClips[index], transform.TransformPoint(controller.center), FootstepAudioVolume);
                 }
             }
         }
@@ -389,7 +425,7 @@ namespace StarterAssets
         {
             if (animationEvent.animatorClipInfo.weight > 0.5f)
             {
-                AudioSource.PlayClipAtPoint(LandingAudioClip, transform.TransformPoint(_controller.center), FootstepAudioVolume);
+                AudioSource.PlayClipAtPoint(LandingAudioClip, transform.TransformPoint(controller.center), FootstepAudioVolume);
             }
         }
         

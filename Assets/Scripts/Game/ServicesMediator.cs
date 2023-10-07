@@ -27,6 +27,9 @@ namespace Game
         public static LocationController LocationController => Get<LocationController>();
         public static PlayerCharacterController PlayerCharacterController => Get<PlayerCharacterController>();
         
+        
+        public static MovementSettings MovementSettings;
+        
         private static T Get<T>()
         {
             return Global.ServiceLocator.Get<T>();
