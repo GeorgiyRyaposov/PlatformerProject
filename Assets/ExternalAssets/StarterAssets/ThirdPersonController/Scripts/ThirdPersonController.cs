@@ -18,6 +18,9 @@ namespace StarterAssets
 #endif
     public class ThirdPersonController : MonoBehaviour
     {
+        [SerializeField, TextArea]
+        private string debugText;
+        
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
         [Range(0, 1)] public float FootstepAudioVolume = 0.5f;
@@ -33,6 +36,11 @@ namespace StarterAssets
         [Tooltip("The radius of the grounded check. Should match the radius of the CharacterController")]
         public float GroundedRadius = 0.28f;
 
+        [Tooltip("The radius of the grounded check. Should match the radius of the CharacterController")]
+        public float WallCheckRadius = 0.32f;
+        [Tooltip("Useful for rough ground")]
+        public float WallOffset = 1f;
+        
         [Tooltip("What layers the character uses as ground")]
         public LayerMask GroundLayers;
 
@@ -58,8 +66,11 @@ namespace StarterAssets
 
         // player
         private float speed;
+        private float horizontalAcceleration;
         private float animationBlend;
         private float targetRotation = 0.0f;
+        private float targetRotationOffset = 0.0f;
+        private float wallRotationElapsed;
         private float rotationVelocity;
         private float verticalVelocity;
         private float terminalVelocity = 53.0f;
@@ -113,6 +124,7 @@ namespace StarterAssets
 
         private MovementSettings settings;
         private Collider closestWall;
+        private Vector3 closestWallPoint;
 
         private void Start()
         {
@@ -140,6 +152,13 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
             Move();
+            
+            var groundedText = Grounded ? "Grounded" : string.Empty;
+            var wallText = WallNear ? "Wall" : string.Empty;
+            var jump = input.Jump ? "Jump" : string.Empty;
+            var time = jumpTimeoutDelta > 0 ? $"time {jumpTimeoutDelta}" : string.Empty;
+            //input.Jump && jumpTimeoutDelta
+            debugText = $"{groundedText}\n{wallText}\n{jump}\n{time}";
         }
 
         private void LateUpdate()
@@ -156,19 +175,18 @@ namespace StarterAssets
             animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
         }
 
-        private Collider[] wallCheckResults = new Collider[10];
+        private readonly Collider[] wallCheckResults = new Collider[10];
         private void GroundedCheck()
         {
             // set sphere position, with offset
-            Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset,
-                transform.position.z);
-            // Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
-            //     QueryTriggerInteraction.Ignore);
-            
-            var hits = Physics.OverlapSphereNonAlloc(spherePosition, GroundedRadius, wallCheckResults, GroundLayers, QueryTriggerInteraction.Ignore);
-            Grounded = hits > 0;
+            var groundPosition = GetGroundCheckPosition();
+            Grounded = Physics.CheckSphere(groundPosition, GroundedRadius, GroundLayers,
+                QueryTriggerInteraction.Ignore);
 
-            CheckWall(hits, spherePosition);
+            if (!Grounded)
+            {
+                CheckWall();
+            }
 
             // update animator if using character
             if (hasAnimator)
@@ -177,8 +195,21 @@ namespace StarterAssets
             }
         }
 
-        private void CheckWall(int hits, Vector3 groundPosition)
+        private Vector3 GetGroundCheckPosition()
         {
+            return new Vector3(transform.position.x, transform.position.y - GroundedOffset,
+                transform.position.z);
+        }
+        private Vector3 GetWallCheckPosition()
+        {
+            return new Vector3(transform.position.x, transform.position.y + WallOffset,
+                transform.position.z);
+        }
+        
+        private void CheckWall()
+        {
+            var wallCheckPosition = GetWallCheckPosition();
+            var hits = Physics.OverlapSphereNonAlloc(wallCheckPosition, WallCheckRadius, wallCheckResults, GroundLayers, QueryTriggerInteraction.Ignore);
             if (hits == 0)
             {
                 closestWall = null;
@@ -191,10 +222,10 @@ namespace StarterAssets
             {
                 var result = wallCheckResults[i];
                 
-                var closestPoint = result.ClosestPoint(groundPosition);
+                var closestPoint = result.ClosestPoint(wallCheckPosition);
                 
-                var directionToSurface = closestPoint - groundPosition;
-                Debug.DrawLine(closestPoint, directionToSurface, Color.green, 5);
+                var directionToSurface = closestPoint - wallCheckPosition;
+                //Debug.DrawLine(closestPoint, directionToSurface, Color.green, 5);
 
                 var dot = Vector3.Dot(directionToSurface.normalized, Vector3.up);
                 if (!(Mathf.Abs(dot) < settings.WallDetection))
@@ -203,15 +234,17 @@ namespace StarterAssets
                 }
                 
                 WallNear = true;
-                var distance = (groundPosition - closestPoint).sqrMagnitude;
+                var distance = (wallCheckPosition - closestPoint).sqrMagnitude;
                 if (closestWall == null)
                 {
                     closestWall = result;
+                    closestWallPoint = closestPoint;
                 }
                 else if (distance < closestDistance)
                 {
                     closestDistance = distance;
                     closestWall = result;
+                    closestWallPoint = closestPoint;
                 }
             }
         }
@@ -240,14 +273,14 @@ namespace StarterAssets
         private void Move()
         {
             // set target speed based on move speed, sprint speed and if sprint is pressed
-            float targetSpeed = input.Sprint ? settings.SprintSpeed : settings.MoveSpeed;
+            float targetSpeed = settings.MoveSpeed;
 
             // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
             // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is no input, set the target speed to 0
             if (input.Move == Vector2.zero) targetSpeed = 0.0f;
-
+            
             // a reference to the players current horizontal velocity
             float currentHorizontalSpeed = new Vector3(controller.velocity.x, 0.0f, controller.velocity.z).magnitude;
 
@@ -260,7 +293,7 @@ namespace StarterAssets
             {
                 // creates curved result rather than a linear one giving a more organic speed change
                 // note T in Lerp is clamped, so we don't need to clamp our speed
-                speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
+                speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude + horizontalAcceleration,
                     Time.deltaTime * settings.SpeedChangeRate);
 
                 // round speed to 3 decimal places
@@ -268,7 +301,7 @@ namespace StarterAssets
             }
             else
             {
-                speed = targetSpeed;
+                speed = targetSpeed + horizontalAcceleration;
             }
 
             animationBlend = Mathf.Lerp(animationBlend, targetSpeed, Time.deltaTime * settings.SpeedChangeRate);
@@ -279,7 +312,7 @@ namespace StarterAssets
 
             // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is a move input rotate player when the player is moving
-            if (input.Move != Vector2.zero)
+            if (Grounded && input.Move != Vector2.zero)
             {
                 targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
                                   mainCamera.transform.eulerAngles.y;
@@ -289,10 +322,19 @@ namespace StarterAssets
                 // rotate to face input direction relative to camera position
                 transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
             }
+            else
+            {
+                horizontalAcceleration = Mathf.Lerp(horizontalAcceleration, 0, Time.deltaTime);
+            }
 
 
-            Vector3 targetDirection = Quaternion.Euler(0.0f, targetRotation, 0.0f) * Vector3.forward;
+            var finalRotation = wallRotationElapsed > 0 ? targetRotationOffset : targetRotation; 
+            wallRotationElapsed -= Time.deltaTime;
+            
+            Vector3 targetDirection = Quaternion.Euler(0.0f, finalRotation, 0.0f) * Vector3.forward;
 
+            //Debug.LogError($"<color=red>{targetRotationOffset} ({targetRotation + targetRotationOffset})</color>");
+            
             // move the player
             controller.Move(targetDirection.normalized * (speed * Time.deltaTime) +
                              new Vector3(0.0f, verticalVelocity, 0.0f) * Time.deltaTime);
@@ -301,12 +343,18 @@ namespace StarterAssets
             if (hasAnimator)
             {
                 animator.SetFloat(animIDSpeed, animationBlend);
-                animator.SetFloat(animIDMotionSpeed, inputMagnitude);
+                animator.SetFloat(animIDMotionSpeed, inputMagnitude + horizontalAcceleration);
             }
         }
 
         private void JumpAndGravity()
         {
+            // jump timeout
+            if (jumpTimeoutDelta >= 0.0f)
+            {
+                jumpTimeoutDelta -= Time.deltaTime;
+            }
+            
             if (Grounded)
             {
                 // reset the fall timeout timer
@@ -328,6 +376,7 @@ namespace StarterAssets
                 // Jump
                 if (input.Jump && jumpTimeoutDelta <= 0.0f)
                 {
+                    input.Jump = false;
                     // the square root of H * -2 * G = how much velocity needed to reach desired height
                     verticalVelocity = Mathf.Sqrt(settings.JumpHeight * -2f * settings.Gravity);
 
@@ -337,23 +386,10 @@ namespace StarterAssets
                         animator.SetBool(animIDJump, true);
                     }
                 }
-
-                // jump timeout
-                if (jumpTimeoutDelta >= 0.0f)
-                {
-                    jumpTimeoutDelta -= Time.deltaTime;
-                }
             }
             else if (WallNear && input.Jump && jumpTimeoutDelta <= 0.0f)
             {
-                // the square root of H * -2 * G = how much velocity needed to reach desired height
-                verticalVelocity = Mathf.Sqrt(settings.JumpHeight * -2f * settings.Gravity);
-
-                // update animator if using character
-                if (hasAnimator)
-                {
-                    animator.SetBool(animIDJump, true);
-                }
+                WallJump();
             }
             else
             {
@@ -373,18 +409,58 @@ namespace StarterAssets
                         animator.SetBool(animIDFreeFall, true);
                     }
                 }
-
-                // if we are not grounded, do not jump
-                if (!WallNear)
-                {
-                    input.Jump = false;
-                }
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
             if (verticalVelocity < terminalVelocity)
             {
                 verticalVelocity += settings.Gravity * Time.deltaTime;
+            }
+        }
+
+        private void WallJump()
+        {
+            input.Jump = false;
+            
+            var ground = GetGroundCheckPosition();
+            var distance = (closestWallPoint - ground).magnitude * 1.1f;
+            var ray = new Ray(ground, closestWallPoint - ground);
+            if (!Physics.Raycast(ray, out var hitInfo, distance, GroundLayers, QueryTriggerInteraction.Ignore))
+            {
+                return;
+            }
+
+            jumpTimeoutDelta = settings.WallJumpTimeout;
+            horizontalAcceleration += 2f;
+            
+            var dotWithInput = Mathf.Abs(Vector2.Dot(input.Move, Vector2.right));
+            var wallForward = Vector3.Cross(hitInfo.normal, hitInfo.transform.up);
+            if (Vector3.Dot(wallForward, transform.forward) < 0)
+            {
+                //crossed the wrong way
+                wallForward = -wallForward;
+            }
+
+            var wallForwardRotation = Quaternion.LookRotation(wallForward);
+            
+            var wallNormal = hitInfo.normal;
+            var wallNormalRotation = Quaternion.LookRotation(wallNormal);
+            
+            var offsetValue = dotWithInput > 0.8f ? settings.WallJumpSideAngle : settings.WallJumpDefaultAngle;
+            var wallJumpRotation = Quaternion.Lerp(wallForwardRotation, wallNormalRotation, offsetValue / 90f);
+            targetRotationOffset = wallJumpRotation.eulerAngles.y;
+            wallRotationElapsed = settings.WallRotationDuration;
+
+            //Debug.LogError($"<color=red>WALLJUMP {offsetValue} ({offsetValue / 90f}) ({targetRotationOffset})</color>");
+            
+            // the square root of H * -2 * G = how much velocity needed to reach desired height
+            verticalVelocity = Mathf.Sqrt(settings.JumpHeight * -2f * settings.Gravity);
+
+            // update animator if using character
+            if (hasAnimator)
+            {
+                animator.SetBool(animIDJump, false);
+                animator.SetBool(animIDJump, true);
             }
         }
 

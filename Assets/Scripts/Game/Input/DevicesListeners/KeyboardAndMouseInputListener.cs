@@ -52,7 +52,10 @@ namespace Game.Input.DevicesListeners
 
         public void OnJump(InputAction.CallbackContext context)
         {
-            JumpInput(context.performed);
+            if (context.performed)
+            {
+                JumpInput(true);
+            }
         }
 
         public void OnInteract(InputAction.CallbackContext context)

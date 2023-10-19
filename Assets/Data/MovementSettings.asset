@@ -13,11 +13,14 @@ MonoBehaviour:
   m_Name: MovementSettings
   m_EditorClassIdentifier: 
   MoveSpeed: 4
-  SprintSpeed: 8
   RotationSmoothTime: 0.12
   SpeedChangeRate: 10
   JumpHeight: 1.2
   Gravity: -15
   JumpTimeout: 0
+  WallJumpTimeout: 0.1
   FallTimeout: 0.1
   WallDetection: 0.2
+  WallJumpSideAngle: 90
+  WallJumpDefaultAngle: 15
+  WallRotationDuration: 1
